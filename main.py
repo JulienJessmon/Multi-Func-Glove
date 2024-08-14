@@ -1,35 +1,57 @@
+"""import mouse
+while True:
+    print(mouse.get_position())"""
+
 import cv2
+from cvzone.HandTrackingModule import HandDetector
 import mediapipe as mp
 import time
+import mouse
+import pyautogui
+import numpy as np
+import threading
 
 cap = cv2.VideoCapture(0)
+cam_w, cam_h = 640, 480
+cap.set(3, cam_w)
+cap.set(4, cam_h)
 
-mpHands = mp.solutions.hands
-hands = mpHands.Hands(max_num_hands=1)
-mpDraw = mp.solutions.drawing_utils
+detector = HandDetector(detectionCon=0.9, maxHands=1)
 
 pTime = 0
 cTime = 0
 
+frameR = 30
+
+l_delay =
+
 while True:
     success, img = cap.read()
-    imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    results = hands.process(imgRGB)
+    img = cv2.flip(img, 1)
+    hands, img = detector.findHands(img, flipType=False)
+    cv2.rectangle(img, (frameR, frameR), (cam_w - frameR, cam_h - frameR), (255, 0, 255), 2)
 
-    if results.multi_hand_landmarks:
-        for handLms in results.multi_hand_landmarks:
-            for id, lm in enumerate(handLms.landmark):
-                h, w, c = img.shape
-                cx, cy = int(lm.x*w), int(lm.y*h)
-                # print(id, cx, cy)
-                cv2.circle(img, (cx, cy), 10, (0, 0, 255), cv2.FILLED)
-            mpDraw.draw_landmarks(img, handLms, mpHands.HAND_CONNECTIONS)
+    if hands:
+        lmlist = hands[0]['lmList']
+        ind_x, ind_y = lmlist[8][0], lmlist[8][1]
+        mid_x, mid_y = lmlist[12][0], lmlist[12][1]
+        cv2.circle(img, (ind_x, ind_y), 5, (255, 0, 0), 2)
+        fingers = detector.fingersUp(hands[0])
 
-            cTime = time.time()
-            fps = 1/(cTime - pTime)
-            pTime = cTime
+        if fingers[1] == 1 and fingers[2] == 0 and fingers[0] == 1:
+            conv_x = int(np.interp(ind_x, (frameR, cam_w - frameR), (0, 1366)))
+            conv_y = int(np.interp(ind_y, (frameR, cam_h - frameR), (0, 768)))
+            mouse.move(conv_x, conv_y)
 
-            cv2.putText(img, str(int(fps)), (10, 70), cv2.FONT_ITALIC, 3, (255, 255, 0), 3)
+        if fingers[1] == 1 and fingers[2] == 1 and fingers[0] == 1:
+            if abs(ind_x-mid_x) < 25:
+
+
+        cTime = time.time()
+        fps = 1/(cTime - pTime)
+        pTime = cTime
+
+        cv2.putText(img, str(int(fps)), (10, 70), cv2.FONT_ITALIC, 2, (255, 255, 0), 3)
 
     cv2.imshow("image", img)
 
