@@ -1,15 +1,12 @@
-"""import mouse
-while True:
-    print(mouse.get_position())"""
-
 import cv2
 from cvzone.HandTrackingModule import HandDetector
-import mediapipe as mp
+# import mediapipe as mp
 import time
 import mouse
-import pyautogui
 import numpy as np
 import threading
+
+# this is made usin cvzone, left area shows very high lagging in this
 
 cap = cv2.VideoCapture(0)
 cam_w, cam_h = 640, 480
@@ -21,9 +18,9 @@ detector = HandDetector(detectionCon=0.9, maxHands=1)
 pTime = 0
 cTime = 0
 
-frameR = 30
+frameR = 100
 
-l_delay =
+# l_delay =
 
 while True:
     success, img = cap.read()
@@ -39,13 +36,9 @@ while True:
         fingers = detector.fingersUp(hands[0])
 
         if fingers[1] == 1 and fingers[2] == 0 and fingers[0] == 1:
-            conv_x = int(np.interp(ind_x, (frameR, cam_w - frameR), (0, 1366)))
-            conv_y = int(np.interp(ind_y, (frameR, cam_h - frameR), (0, 768)))
+            conv_x = int(np.interp(ind_x, (frameR, cam_w - frameR), (0, 1536)))
+            conv_y = int(np.interp(ind_y, (frameR, cam_h - frameR), (0, 864)))
             mouse.move(conv_x, conv_y)
-
-        if fingers[1] == 1 and fingers[2] == 1 and fingers[0] == 1:
-            if abs(ind_x-mid_x) < 25:
-
 
         cTime = time.time()
         fps = 1/(cTime - pTime)
