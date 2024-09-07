@@ -1,10 +1,3 @@
-"""import mouse
-while True:
-    print(mouse.get_position())
-
-import pyautogui
-print(pyautogui.size())"""
-
 # this is made usin mp, left area shows no lagging in this
 
 import cv2
@@ -36,23 +29,36 @@ click_delay = 1
 
 current_time = time.time()
 
+# Initialize smoothing variables
+prev_conv_x, prev_conv_y = 0, 0
+alpha = 0.7  # Smoothing factor (adjust between 0 to 1, closer to 1 is smoother)
+
+
+def smooth_positions(prev_x, prev_y, new_x, new_y, alpha):
+    # Low-pass filter: smooth the current position based on the previous one
+    smoothed_x = alpha * prev_x + (1 - alpha) * new_x
+    smoothed_y = alpha * prev_y + (1 - alpha) * new_y
+    return smoothed_x, smoothed_y
+
+
 def l_clk_delay():
     global l_delay
     global l_clk_thread
     time.sleep(1)
     l_delay = 0
-    l_clk_thread = threading.Thread(target= l_clk_delay)
+    l_clk_thread = threading.Thread(target=l_clk_delay)
+
 
 def r_clk_delay():
     global r_delay
     global r_clk_thread
     time.sleep(1)
     r_delay = 0
-    r_clk_thread = threading.Thread(target= r_clk_delay)
+    r_clk_thread = threading.Thread(target=r_clk_delay)
 
 
-l_clk_thread = threading.Thread(target= l_clk_delay)
-r_clk_thread = threading.Thread(target= r_clk_delay)
+l_clk_thread = threading.Thread(target=l_clk_delay)
+r_clk_thread = threading.Thread(target=r_clk_delay)
 
 while True:
     success, img = cap.read()
@@ -89,7 +95,9 @@ while True:
             if fingers_up[1] == 1 and fingers_up[2] == 0 and fingers_up[3] == 0 and fingers_up[4] == 0:
                 conv_x = int(np.interp(ind_x, (frameR, cam_w - frameR), (0, 1536)))
                 conv_y = int(np.interp(ind_y, (frameR, cam_h - frameR), (0, 864)))
-                mouse.move(conv_x, conv_y)
+                smoothed_x, smoothed_y = smooth_positions(prev_conv_x, prev_conv_y, conv_x, conv_y, alpha)
+                prev_conv_x, prev_conv_y = smoothed_x, smoothed_y
+                mouse.move(int(smoothed_x), int(smoothed_y))
 
             if fingers_up[1] == 1 and fingers_up[2] == 1 and fingers_up[3] == 0 and fingers_up[4] == 0:
                 if abs(ind_x - mid_x) < 25:
