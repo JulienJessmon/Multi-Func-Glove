@@ -1,11 +1,11 @@
 import serial
 import time
 
-bt_port = 'COM3'  # Replace with ur COM port
+bt_port = 'COM4'  # Replace with ur COM port
 baud_rate = 115200  # Match the baud rate in the ESP32 code
 
 try:
-    bt_serial = serial.Serial(bt_port, baud_rate, timeout=1)
+    bt_serial = serial.Serial(bt_port, baud_rate, timeout=3)
     print(f"Connected to {bt_port}")
 
     while True:
