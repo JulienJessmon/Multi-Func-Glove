@@ -95,3 +95,4 @@ finally:
     if bt_serial and bt_serial.is_open:
         bt_serial.close()
         print("Connection closed.")
+
