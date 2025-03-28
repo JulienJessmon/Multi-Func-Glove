@@ -10,9 +10,115 @@ import pyautogui
 import serial
 import time
 
-bt_port = 'COM4'  # Replace with your COM port
+bt_port = 'COM6'  # Replace with your COM port
 baud_rate = 115200  # Match the baud rate in the ESP32 code
 gesture_cooldown = 3
+
+def minimize_all():
+    pyautogui.hotkey('win', 'm')
+
+def minimize_current():
+    pyautogui.hotkey('win', 'down')
+
+def restore_current():
+    pyautogui.hotkey('win', 'up')
+
+def screenshot():
+    pyautogui.hotkey('win', 'shift', 's')
+
+def tile_left_right():
+    pyautogui.hotkey('win', 'right')
+    time.sleep(0.5)
+    pyautogui.press('enter')
+
+def copy():
+    pyautogui.hotkey('ctrl', 'c')
+
+def paste():
+    pyautogui.hotkey('ctrl', 'v')
+
+def cut():
+    pyautogui.hotkey('ctrl', 'x')
+
+def undo():
+    pyautogui.hotkey('ctrl', 'z')
+
+def redo():
+    pyautogui.hotkey('ctrl', 'y')
+
+def select_all():
+    pyautogui.hotkey('ctrl', 'a')
+
+def save():
+    pyautogui.hotkey('ctrl', 's')
+
+def print_file():
+    pyautogui.hotkey('ctrl', 'p')
+
+def open_file_explorer():
+    pyautogui.hotkey('win', 'e')
+
+def rename():
+    pyautogui.press('f2')
+
+def delete():
+    pyautogui.press('delete')
+
+def permanent_delete():
+    pyautogui.hotkey('shift', 'delete')
+
+def switch_windows():
+    pyautogui.hotkey('alt', 'tab')
+
+def minimize_all_windows():
+    pyautogui.hotkey('win', 'm')
+
+def close_window():
+    pyautogui.hotkey('alt', 'f4')
+
+def lock_screen():
+    pyautogui.hotkey('win', 'l')
+
+def open_new_tab():
+    pyautogui.hotkey('ctrl', 't')
+
+def close_tab():
+    pyautogui.hotkey('ctrl', 'w')
+
+def search():
+    pyautogui.hotkey('ctrl', 'l')
+
+def refresh():
+    pyautogui.hotkey('ctrl', 'r')
+
+def open_settings():
+    pyautogui.hotkey('win', 'i')
+
+def open_run():
+    pyautogui.hotkey('win', 'r')
+
+def switch_tab():
+    time.sleep(0.1)  # Add a slight delay before pressing the keys
+    pyautogui.keyDown('alt')
+    pyautogui.press('tab')
+    pyautogui.keyUp('alt')
+    time.sleep(0.1)  # Add a slight delay after pressing the keys
+
+def map_to_func(called_func):
+    if called_func == "Minimize Current Window":
+        minimize_current()
+    elif called_func == "Switch Tab":
+        switch_tab()
+    elif called_func == "Switch Windows":
+        switch_windows()
+    elif called_func == "Minimize All Windows":
+        minimize_all_windows()
+    elif called_func == "Restore Current Window":
+        restore_current()
+    elif called_func == "Tile Left/Right":
+        tile_left_right()
+    elif called_func == "Screenshot":
+        screenshot()
 
 def single_match(activation_value, flex_input, bit_value, is_inverse=False):
     if bit_value:
@@ -44,13 +150,14 @@ def full_match(activation_values, flex_inputs, flex_bit_array):
     return True
 
 class CustomGesturesDialog(QDialog):
-    def __init__(self, activation_values, parent=None):
+    functions_updated = pyqtSignal(list)  # New signal to emit when functions are updated
+    def __init__(self, activation_values, func_list, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Custom Gestures")
         self.setModal(True)
         self.activation_values = activation_values
         self.functions = ["Minimize Current Window", "Switch Tab", "Switch Windows", "Minimize All Windows", "Restore Current Window", "Tile Left/Right", "Screenshot"]
-        self.current_functions = self.functions.copy()
+        self.current_functions = func_list
 
         # Create input fields for each gesture
         self.form_layout = QFormLayout()
@@ -68,7 +175,7 @@ class CustomGesturesDialog(QDialog):
 
         # Rotate Functions button
         self.rotate_button = QPushButton("Rotate Functions")
-        self.rotate_button.clicked.connect(self.rotate_functions)
+        self.rotate_button.clicked.connect(lambda: self.rotate_functions(parent, func_list))
 
         # Layout
         layout = QVBoxLayout()
@@ -81,33 +188,46 @@ class CustomGesturesDialog(QDialog):
         try:
             for i, combo_box in enumerate(self.combo_boxes):
                 self.current_functions[i] = combo_box.currentText()
+            self.functions_updated.emit(self.current_functions)  # Emit the updated functions
             QMessageBox.information(self, "Success", "Custom gestures saved successfully!")
             self.close()
         except Exception as e:
             QMessageBox.warning(self, "Error", f"An error occurred: {e}")
 
-    def rotate_functions(self):
+    def rotate_functions(self, main_window, func_list):
         # Rotate the functions to the next gesture
         self.current_functions = self.current_functions[-1:] + self.current_functions[:-1]
         for i, combo_box in enumerate(self.combo_boxes):
             combo_box.setCurrentText(self.current_functions[i])
+        self.functions_updated.emit(self.current_functions)
+        main_window.update_gesture_mappings(self.current_functions)
+        main_window.current_functions = self.current_functions
+        # No need to update thread separately since it now references main_window.current_functions
+
 
 class BluetoothThread(QThread):
     update_status_signal = pyqtSignal(str)
     update_action_log_signal = pyqtSignal(str)
 
-    def __init__(self, activation_values):
+    def __init__(self, activation_values, main_window):
         super().__init__()
         self.activation_values = activation_values
+        self.main_window = main_window  # Store reference to main window
         self.running = True
-        self.last_gesture_time = 0  # Timestamp of the last detected gesture
-        self.gesture_cooldown = 3  # Cooldown period in seconds
+        self.last_gesture_time = 0
+        self.gesture_cooldown = 3
+
+    @property
+    def current_functions(self):
+        # Always get the current functions from the main window
+        return self.main_window.current_functions
 
     def run(self):
         bt_serial = None
         try:
             bt_serial = serial.Serial(bt_port, baud_rate, timeout=3)
             self.update_status_signal.emit("Connected")
+            print("Connected")
             while self.running:
                 sensor_data = ""
 
@@ -138,10 +258,20 @@ class BluetoothThread(QThread):
                         current_time = time.time()
                         if current_time - self.last_gesture_time >= self.gesture_cooldown:
                             # Process gestures only if cooldown has passed
-                            if full_match(self.activation_values, flex_inputs, [1, 1, 1]):
+                            if full_match(self.activation_values, flex_inputs, [1, 0, 0]):
+                                called_func = self.current_functions[0]
+                                map_to_func(called_func)
                                 self.update_action_log_signal.emit(self.current_functions[0])
                                 self.last_gesture_time = current_time
+                                # In BluetoothThread.run():
                             elif full_match(self.activation_values, flex_inputs, [1, 1, 0]):
+                                self.main_window.rotate_functions()  # This is now thread-safe
+                                self.update_action_log_signal.emit("Functions rotated!")
+                                self.last_gesture_time = current_time
+                            elif full_match(self.activation_values, flex_inputs, [0, 1, 0]):
+                                self.update_action_log_signal.emit(self.current_functions[1])
+                                self.last_gesture_time = current_time
+                            """elif full_match(self.activation_values, flex_inputs, [1, 1, 1]):
                                 self.update_action_log_signal.emit(self.current_functions[1])
                                 self.last_gesture_time = current_time
                             elif full_match(self.activation_values, flex_inputs, [1, 0, 1]):
@@ -152,10 +282,8 @@ class BluetoothThread(QThread):
                                 self.last_gesture_time = current_time
                             elif full_match(self.activation_values, flex_inputs, [0, 1, 1]):
                                 self.update_action_log_signal.emit(self.current_functions[4])
-                                self.last_gesture_time = current_time
-                            elif full_match(self.activation_values, flex_inputs, [0, 1, 0]):
-                                self.update_action_log_signal.emit(self.current_functions[5])
-                                self.last_gesture_time = current_time
+                                self.last_gesture_time = current_time"""
+
 
                     except ValueError as e:
                         print(f"Error processing sensor data: {e}")
@@ -185,11 +313,14 @@ from PyQt5.QtWidgets import QFrame, QLabel, QVBoxLayout, QPushButton
 from PyQt5.QtWidgets import QFrame, QLabel, QVBoxLayout, QPushButton
 
 class MainWindow(QMainWindow):
+
+    rotate_functions_signal = pyqtSignal()
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Glove Interface")
         self.setGeometry(100, 100, 800, 600)  # Increased width to accommodate the side frame
 
+        self.rotate_functions_signal.connect(self._rotate_functions)
         # Declare all widgets
         self.central_widget = QWidget()
         self.central_widget.setStyleSheet("background-color: #1b1c2a;"
@@ -405,7 +536,7 @@ class MainWindow(QMainWindow):
         self.gesture_mappings_layout.addWidget(self.mappings_heading)
 
         # Labels to display gesture-function mappings
-        self.activation_values = [1130, 300, 100]  # Example activation values
+        self.activation_values = [1600, 335, 100]  # Example activation values
         self.current_functions = ["Minimize Current Window", "Switch Tab", "Switch Windows", "Minimize All Windows",
                                   "Restore Current Window", "Tile Left/Right", "Screenshot"]
 
@@ -465,11 +596,13 @@ class MainWindow(QMainWindow):
         # Initialize UI
         self.initUI()
 
-        self.bt_thread = BluetoothThread(self.activation_values)
+        self.bt_thread = BluetoothThread(self.activation_values, self)
         self.bt_thread.update_status_signal.connect(self.update_status)
         self.bt_thread.update_action_log_signal.connect(self.add_action_to_log)
         self.bt_thread.start()
-
+    def funcRotate(self, func_list):
+        func_list.append(func_list[0])
+        func_list.pop(0)
     def initUI(self):
         # Set central widget
         self.setCentralWidget(self.central_widget)
@@ -509,10 +642,20 @@ class MainWindow(QMainWindow):
         self.bottom_frame.setStyleSheet("background-color: #3a3b51; border-radius: 10px;")
         self.right_frame.setStyleSheet("background-color: #1b1c2a; border: none;")  # Transparent background
 
-    def update_gesture_mappings(self):
+    def rotate_functions(self):
+        """Thread-safe way to request a rotation"""
+        self.rotate_functions_signal.emit()
+
+    def _rotate_functions(self):
+        """Actual rotation implementation (runs in main thread)"""
+        # Rotate the functions
+        self.current_functions = self.current_functions[-1:] + self.current_functions[:-1]
+        self.update_gesture_mappings(self.current_functions)
+
+    def update_gesture_mappings(self, func_list):
         """Update the labels in the right frame with the current gesture-function mappings."""
         for i, label in enumerate(self.gesture_labels):
-            label.setText(f"Gesture {i + 1}: {self.current_functions[i]}")
+            label.setText(f"Gesture {i + 1}: {func_list[i]}")
 
     def update_status(self, message):
         self.connecting_text.setText(message)
@@ -552,17 +695,16 @@ class MainWindow(QMainWindow):
             self.bt_thread.stop()
 
         # Start a new thread
-        self.bt_thread = BluetoothThread(self.activation_values)
+        self.bt_thread = BluetoothThread(self.activation_values, self)
         self.bt_thread.update_status_signal.connect(self.update_status)
         self.bt_thread.update_action_log_signal.connect(self.add_action_to_log)
         self.bt_thread.start()
 
     def open_custom_gestures_dialog(self):
         """Open a dialog to set custom gestures."""
-        dialog = CustomGesturesDialog(self.activation_values, self)
-        if dialog.exec_() == QDialog.Accepted:
-            self.current_functions = dialog.current_functions
-            self.update_gesture_mappings()  # Update the gesture-function mappings display
+        dialog = CustomGesturesDialog(self.activation_values, self.current_functions, self)
+        dialog.functions_updated.connect(self.update_gesture_mappings)
+        dialog.exec_()  # Don't need to check for Accepted since signal handles updates
 
     def calibrate_mpu6050(self):
         """Handle the calibration of the MPU6050."""
