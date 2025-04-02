@@ -13,6 +13,8 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtGui import QPixmap, QMovie
 from PyQt5.QtCore import Qt, QSize, QThread, pyqtSignal
 import pyautogui
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, message="SymbolDatabase.GetPrototype.*")
 
 # Constants
 BT_PORT = 'COM6'  # Replace with your COM port
@@ -23,7 +25,7 @@ FRAME_R = 100
 
 
 class CameraHandTracking:
-    def __init__(self):
+    def __init__(self, log_callback=None):
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
             min_detection_confidence=0.7,
@@ -40,6 +42,24 @@ class CameraHandTracking:
         # Smoothing variables
         self.prev_conv_x, self.prev_conv_y = 0, 0
         self.alpha = 0.7  # Smoothing factor
+        self.log_callback = log_callback
+
+        # Thumb detection variables
+        self.thumb_up_start_time = None
+        self.thumb_up_duration_needed = 5  # seconds
+        self.switch_to_flex_mode_callback = None
+        self.thumb_debug = False  # Debug visuals disabled by default
+
+        # Click cooldown variables
+        self.last_click_time = 0
+        self.click_cooldown = 2  # seconds
+
+    def set_mode_switch_callback(self, callback):
+        self.switch_to_flex_mode_callback = callback
+
+    def landmark_distance(self, landmark1, landmark2):
+        """Calculate Euclidean distance between two landmarks"""
+        return ((landmark1.x - landmark2.x) ** 2 + (landmark1.y - landmark2.y) ** 2) ** 0.5
 
     def initialize_camera(self):
         """Initialize the camera with multiple attempts"""
@@ -65,7 +85,7 @@ class CameraHandTracking:
 
     def stop(self):
         self.running = False
-        if self.thread:
+        if self.thread and self.thread.is_alive() and threading.current_thread() != self.thread:
             self.thread.join()
         if self.cap:
             self.cap.release()
@@ -96,36 +116,65 @@ class CameraHandTracking:
 
             cv2.rectangle(img, (FRAME_R, FRAME_R), (CAM_W - FRAME_R, CAM_H - FRAME_R), (255, 0, 255), 2)
 
+            current_time = time.time()  # Get current time once per frame
+
             if results.multi_hand_landmarks:
                 for hand_landmarks in results.multi_hand_landmarks:
                     self.mp_drawing.draw_landmarks(img, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
 
-                    # Get index finger tip coordinates
-                    ind_x, ind_y = hand_landmarks.landmark[8].x * CAM_W, hand_landmarks.landmark[8].y * CAM_H
-                    # Get middle finger tip coordinates
-                    mid_x, mid_y = hand_landmarks.landmark[12].x * CAM_W, hand_landmarks.landmark[12].y * CAM_H
-                    # Get ring finger tip coordinates
-                    ring_x, ring_y = hand_landmarks.landmark[16].x * CAM_W, hand_landmarks.landmark[16].y * CAM_H
+                    # Get finger landmarks
+                    thumb_tip = hand_landmarks.landmark[4]
+                    thumb_ip = hand_landmarks.landmark[3]
+                    thumb_mcp = hand_landmarks.landmark[2]
 
-                    current_time = time.time()
+                    index_tip = hand_landmarks.landmark[8]
+                    index_pip = hand_landmarks.landmark[6]
 
-                    # Draw circle on index finger tip
-                    cv2.circle(img, (int(ind_x), int(ind_y)), 5, (255, 0, 0), 2)
+                    middle_tip = hand_landmarks.landmark[12]
+                    middle_pip = hand_landmarks.landmark[10]
+
+                    ring_tip = hand_landmarks.landmark[16]
+                    pinky_tip = hand_landmarks.landmark[20]
+
+                    # Calculate distances for thumb detection
+                    tip_ip_dist = self.landmark_distance(thumb_tip, thumb_ip)
+                    tip_mcp_dist = self.landmark_distance(thumb_tip, thumb_mcp)
+
+                    # Improved thumb detection
+                    thumb_up = (thumb_tip.y < thumb_ip.y and  # Tip above IP joint
+                                thumb_tip.y < thumb_mcp.y and  # Tip above MCP joint
+                                tip_ip_dist > 0.05 and  # Tip sufficiently far from IP
+                                tip_mcp_dist > 0.1)  # Tip sufficiently far from MCP
+
+                    # Thumb-up gesture timing
+                    if thumb_up:
+                        if self.thumb_up_start_time is None:
+                            self.thumb_up_start_time = current_time
+                        else:
+                            current_duration = current_time - self.thumb_up_start_time
+                            if current_duration >= self.thumb_up_duration_needed:
+                                if self.switch_to_flex_mode_callback:
+                                    self.log_callback("Detected thumb-up for 5 seconds")
+                                    self.switch_to_flex_mode_callback()
+                                    self.thumb_up_start_time = None
+                                    break  # Exit the loop to switch modes
+                    else:
+                        self.thumb_up_start_time = None
 
                     # Check which fingers are up
                     fingers_up = [
-                        hand_landmarks.landmark[4].y < hand_landmarks.landmark[3].y,  # Thumb
-                        hand_landmarks.landmark[8].y < hand_landmarks.landmark[6].y,  # Index
-                        hand_landmarks.landmark[12].y < hand_landmarks.landmark[10].y,  # Middle
-                        hand_landmarks.landmark[16].y < hand_landmarks.landmark[14].y,  # Ring
-                        hand_landmarks.landmark[20].y < hand_landmarks.landmark[18].y  # Pinky
+                        thumb_up,  # We use our improved thumb detection
+                        index_tip.y < index_pip.y,  # Index finger
+                        middle_tip.y < middle_pip.y,  # Middle finger
+                        ring_tip.y < hand_landmarks.landmark[14].y,  # Ring finger
+                        pinky_tip.y < hand_landmarks.landmark[18].y  # Pinky finger
                     ]
 
                     # Cursor movement mode (only index finger up)
                     if fingers_up[1] and not fingers_up[2] and not fingers_up[3] and not fingers_up[4]:
                         # Convert coordinates to screen resolution
-                        conv_x = int(np.interp(ind_x, (FRAME_R, CAM_W - FRAME_R), (0, 1536)))
-                        conv_y = int(np.interp(ind_y, (FRAME_R, CAM_H - FRAME_R), (0, 864)))
+                        conv_x = int(np.interp(index_tip.x * CAM_W, (FRAME_R, CAM_W - FRAME_R), (0, 1536)))
+                        conv_y = int(np.interp(index_tip.y * CAM_H, (FRAME_R, CAM_H - FRAME_R), (0, 864)))
 
                         # Apply smoothing
                         smoothed_x, smoothed_y = self.smooth_positions(
@@ -136,15 +185,50 @@ class CameraHandTracking:
                         # Move mouse
                         mouse.move(int(smoothed_x), int(smoothed_y))
 
-                    # Left click (index and middle fingers up)
-                    if fingers_up[1] and fingers_up[2] and not fingers_up[3] and not fingers_up[4]:
-                        if abs(ind_x - mid_x) < 25:  # Fingers close together
+                    # Left click (index and middle fingers up) with cooldown
+                    if (fingers_up[1] and fingers_up[2] and not fingers_up[3] and not fingers_up[4] and
+                            current_time - self.last_click_time >= self.click_cooldown):
+                        if abs(index_tip.x - middle_tip.x) * CAM_W < 25:  # Fingers close together
                             mouse.click(button='left')
+                            self.last_click_time = current_time
+                            if self.log_callback:
+                                self.log_callback("Left mouse click performed")
 
-                    # Right click (index, middle and ring fingers up)
-                    if fingers_up[1] and fingers_up[2] and fingers_up[3] and not fingers_up[4]:
-                        if abs(ind_x - mid_x) < 25 and abs(mid_x - ring_x) < 25:  # Fingers close together
+                    # Right click (index, middle and ring fingers up) with cooldown
+                    if (fingers_up[1] and fingers_up[2] and fingers_up[3] and not fingers_up[4] and
+                            current_time - self.last_click_time >= self.click_cooldown):
+                        if (abs(index_tip.x - middle_tip.x) * CAM_W < 25 and
+                                abs(middle_tip.x - ring_tip.x) * CAM_W < 25):
                             mouse.click(button='right')
+                            self.last_click_time = current_time
+                            if self.log_callback:
+                                self.log_callback("Right mouse click performed")
+
+                    # Visual feedback for thumb detection
+                    if thumb_up and self.thumb_up_start_time:
+                        duration = current_time - self.thumb_up_start_time
+                        progress = min(1.0, duration / self.thumb_up_duration_needed)
+
+                        # Draw progress bar
+                        bar_width = 200
+                        bar_height = 20
+                        bar_x = CAM_W // 2 - bar_width // 2
+                        bar_y = 50
+
+                        # Background
+                        cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height),
+                                      (100, 100, 100), -1)
+                        # Progress
+                        cv2.rectangle(img, (bar_x, bar_y),
+                                      (bar_x + int(bar_width * progress), bar_y + bar_height),
+                                      (0, 255, 0), -1)
+                        # Border
+                        cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height),
+                                      (255, 255, 255), 2)
+
+                        # Text
+                        cv2.putText(img, "Hold thumb up to switch mode", (bar_x, bar_y - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
             # Calculate and display FPS
             cTime = time.time()
@@ -166,14 +250,15 @@ class CameraHandTracking:
 
 
 class FlexSensorControl:
-    def __init__(self):
-        self.activation_values = [1600, 335, 100]
+    def __init__(self, log_callback=None):
+        self.activation_values = [1200, 205, 100]
         self.current_functions = ["Minimize Current Window", "Switch Tab", "Switch Windows",
                                   "Minimize All Windows", "Restore Current Window", "Tile Left/Right", "Screenshot"]
         self.last_gesture_time = 0
         self.gesture_cooldown = GESTURE_COOLDOWN
         self.running = False
         self.thread = None
+        self.log_callback = log_callback
 
     def start(self):
         self.running = True
@@ -203,6 +288,10 @@ class FlexSensorControl:
         return True
 
     def full_match(self, activation_values, flex_inputs, flex_bit_array):
+        # Check if we have enough inputs to compare
+        if len(flex_inputs) < len(activation_values):
+            return False
+
         for i in range(len(activation_values)):
             is_inverse = (i == 1)  # Set is_inverse=True only for the second sensor
             if not self.single_match(activation_values[i], flex_inputs[i], flex_bit_array[i], is_inverse):
@@ -213,11 +302,16 @@ class FlexSensorControl:
         try:
             bt_serial = serial.Serial(BT_PORT, BAUD_RATE, timeout=3)
             print("Connected to flex sensors")
+            if self.log_callback:
+                self.log_callback("Connected to flex sensors")
 
             while self.running:
                 sensor_data = ""
                 if bt_serial.in_waiting > 0:
-                    sensor_data = bt_serial.readline().decode('utf-8').strip()
+                    try:
+                        sensor_data = bt_serial.readline().decode('utf-8').strip()
+                    except UnicodeDecodeError:
+                        continue  # Skip corrupted data
 
                 if sensor_data:
                     try:
@@ -226,34 +320,57 @@ class FlexSensorControl:
                         for pair in data_pairs:
                             if ':' in pair:
                                 key, value = pair.split(':')
-                                sensor_values[key] = float(value)
+                                try:
+                                    sensor_values[key] = float(value)
+                                except ValueError:
+                                    continue  # Skip invalid values
 
                         flex_inputs = []
                         for i in range(1, 4):  # F1 to F3
                             key = f'F{i}'
                             if key in sensor_values:
                                 flex_inputs.append(int(sensor_values[key]))
+                        print(flex_inputs)
+                        # Only proceed if we got all 3 sensor readings
+                        if len(flex_inputs) != 3:
+                            continue
 
                         current_time = time.time()
                         if current_time - self.last_gesture_time >= self.gesture_cooldown:
-                            if self.full_match(self.activation_values, flex_inputs, [1, 0, 0]):
-                                self.map_to_func(self.current_functions[0])
-                                self.last_gesture_time = current_time
-                            elif self.full_match(self.activation_values, flex_inputs, [1, 1, 0]):
-                                self.rotate_functions()
-                                self.last_gesture_time = current_time
-                            elif self.full_match(self.activation_values, flex_inputs, [0, 1, 0]):
-                                self.map_to_func(self.current_functions[1])
-                                self.last_gesture_time = current_time
+                            try:
+                                if self.full_match(self.activation_values, flex_inputs, [1, 0, 0]):
+                                    self.map_to_func(self.current_functions[0])
+                                    self.last_gesture_time = current_time
+                                    if self.log_callback:
+                                        self.log_callback(f"Gesture: {self.current_functions[0]}")
+                                elif self.full_match(self.activation_values, flex_inputs, [1, 1, 0]):
+                                    self.rotate_functions()
+                                    self.last_gesture_time = current_time
+                                    if self.log_callback:
+                                        self.log_callback("Functions rotated")
+                                elif self.full_match(self.activation_values, flex_inputs, [0, 1, 0]):
+                                    self.map_to_func(self.current_functions[1])
+                                    self.last_gesture_time = current_time
+                                    if self.log_callback:
+                                        self.log_callback(f"Gesture: {self.current_functions[1]}")
+                            except Exception as e:
+                                if self.log_callback:
+                                    self.log_callback(f"Sensor error: {str(e)}")
+                                continue
 
                     except ValueError as e:
-                        print(f"Error processing sensor data: {e}")
+                        if self.log_callback:
+                            self.log_callback(f"Data processing error: {e}")
+                        continue
 
                 time.sleep(0.02)
 
         except serial.SerialException as e:
-            print(f"Error connecting to {BT_PORT}: {e}")
-
+            if self.log_callback:
+                self.log_callback(f"Serial connection error: {e}")
+        except Exception as e:
+            if self.log_callback:
+                self.log_callback(f"Unexpected error: {e}")
         finally:
             if 'bt_serial' in locals() and bt_serial.is_open:
                 bt_serial.close()
@@ -285,7 +402,7 @@ class FlexSensorControl:
 
 
 class MPUMouseControl:
-    def __init__(self):
+    def __init__(self, log_callback=None):
         self.mouse = Controller()
         self.running = False
         self.thread = None
@@ -311,6 +428,7 @@ class MPUMouseControl:
 
         # Dead zone threshold
         self.dead_zone = 1.0
+        self.log_callback = log_callback
 
     def start(self):
         self.running = True
@@ -462,16 +580,17 @@ class CustomGesturesDialog(QDialog):
 
 class MainWindow(QMainWindow):
     rotate_functions_signal = pyqtSignal()
-
+    log_signal = pyqtSignal(str)
     def __init__(self):
         super().__init__()
+        self.log_signal.connect(self.add_action_to_log)
         self.setWindowTitle("Unified Glove Control")
         self.setGeometry(100, 100, 800, 600)
 
         # Initialize control systems
-        self.camera_control = CameraHandTracking()
-        self.flex_control = FlexSensorControl()
-        self.mpu_control = MPUMouseControl()
+        self.camera_control = CameraHandTracking(log_callback=self.log_signal.emit)
+        self.flex_control = FlexSensorControl(log_callback=self.log_signal.emit)
+        self.mpu_control = MPUMouseControl(log_callback=self.log_signal.emit)
 
         # Current mode (0: camera, 1: flex, 2: mpu)
         self.current_mode = 0
@@ -536,6 +655,76 @@ class MainWindow(QMainWindow):
         self.left_layout.addWidget(self.mode_frame)
         self.left_layout.addWidget(self.status_frame)
 
+        # Action Log area
+        self.action_log_frame = QFrame()
+        self.action_log_frame.setStyleSheet("""
+            background-color: #2a2b41;
+            border-radius: 10px;
+        """)
+        self.action_log_layout = QVBoxLayout(self.action_log_frame)
+
+        # Action Log heading
+        self.action_log_heading = QLabel("Action Log")
+        self.action_log_heading.setStyleSheet("""
+            color: white; 
+            font-size: 18px; 
+            font-weight: bold;
+        """)
+        self.action_log_heading.setAlignment(Qt.AlignCenter)
+
+        # Scroll area for action log
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_content = QWidget()
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setAlignment(Qt.AlignTop)
+        self.scroll_area.setWidget(self.scroll_content)
+
+        # Style the scroll area
+        self.scroll_area.setStyleSheet("""
+            QScrollArea {
+                border: none;
+                background: transparent;
+            }
+            QScrollBar:vertical {
+                background: #3a3b51;
+                width: 8px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #888;
+                min-height: 20px;
+                border-radius: 4px;
+            }
+        """)
+
+        # Clear button
+        self.clear_log_btn = QPushButton("Clear Log")
+        self.clear_log_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1f84ce;
+                border: none;
+                border-radius: 15px;
+                padding: 5px;
+                color: white;
+            }
+            QPushButton:hover {
+                background-color: #2a93e0;
+            }
+            QPushButton:pressed {
+                background-color: #1a73b6;
+            }
+        """)
+        self.clear_log_btn.clicked.connect(self.clear_action_log)
+
+        # Add widgets to action log frame
+        self.action_log_layout.addWidget(self.action_log_heading)
+        self.action_log_layout.addWidget(self.scroll_area)
+        self.action_log_layout.addWidget(self.clear_log_btn)
+
+        # Add action log frame to left layout (after status_frame)
+        self.left_layout.addWidget(self.action_log_frame)
+
         # Right frame
         self.right_frame = QFrame()
         self.right_frame.setStyleSheet("""
@@ -555,6 +744,8 @@ class MainWindow(QMainWindow):
             font-weight: bold;
         """)
         self.mappings_heading.setAlignment(Qt.AlignCenter)
+
+        self.gesture_mappings_layout.addWidget(self.mappings_heading)
 
         self.gesture_labels = []
         for i in range(6):
@@ -582,7 +773,6 @@ class MainWindow(QMainWindow):
         """)
         self.custom_gestures_btn.clicked.connect(self.open_custom_gestures_dialog)
 
-        self.gesture_mappings_layout.addWidget(self.mappings_heading)
         self.gesture_mappings_layout.addWidget(self.custom_gestures_btn)
 
         # MPU calibration (for MPU mode)
@@ -628,6 +818,31 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(self.central_widget)
 
+    def add_action_to_log(self, message):
+        """Add a message to the action log"""
+        log_label = QLabel(message)
+        log_label.setStyleSheet("""
+            background-color: #3a3b51;
+            border-radius: 5px;
+            padding: 5px;
+            margin: 2px;
+            color: white;
+        """)
+        log_label.setWordWrap(True)
+        self.scroll_layout.addWidget(log_label)
+
+        # Scroll to bottom
+        scroll_bar = self.scroll_area.verticalScrollBar()
+        scroll_bar.setValue(scroll_bar.maximum())
+
+    def clear_action_log(self):
+        """Clear all items from the action log"""
+        while self.scroll_layout.count():
+            item = self.scroll_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
     def get_mode_button_style(self, is_active):
         base_style = """
             QPushButton {
@@ -653,14 +868,30 @@ class MainWindow(QMainWindow):
     def switch_to_camera_mode(self):
         self.stop_current_mode()
         self.current_mode = 0
+        self.camera_control.set_mode_switch_callback(self.safe_switch_to_flex_mode)  # Changed to safe method
         self.camera_control.start()
-
         # Update UI
-        self.camera_mode_btn.setStyleSheet(self.get_mode_button_style(True))
-        self.flex_mode_btn.setStyleSheet(self.get_mode_button_style(False))
-        self.mpu_mode_btn.setStyleSheet(self.get_mode_button_style(False))
-        self.mode_label.setText("Current Mode: Camera Hand Tracking")
+        self.update_ui_for_mode("Camera Hand Tracking")
 
+    def safe_switch_to_flex_mode(self):
+        # Use QTimer to schedule the mode switch in the main thread
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, self.perform_flex_mode_switch)
+
+    def perform_flex_mode_switch(self):
+        """Perform the actual mode switch in the main thread"""
+        self.stop_current_mode()
+        self.current_mode = 1
+        self.flex_control.start()
+        self.update_ui_for_mode("Flex Sensor Control")
+        self.log_signal.emit("Switched to Flex Mode (thumb gesture)")
+
+    def update_ui_for_mode(self, mode_name):
+        """Update UI elements for the current mode"""
+        self.camera_mode_btn.setStyleSheet(self.get_mode_button_style(self.current_mode == 0))
+        self.flex_mode_btn.setStyleSheet(self.get_mode_button_style(self.current_mode == 1))
+        self.mpu_mode_btn.setStyleSheet(self.get_mode_button_style(self.current_mode == 2))
+        self.mode_label.setText(f"Current Mode: {mode_name}")
     def switch_to_flex_mode(self):
         self.stop_current_mode()
         self.current_mode = 1
